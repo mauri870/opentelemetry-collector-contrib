@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/exporter/exporterbatcher"
@@ -85,6 +86,10 @@ type Config struct {
 	// If Batcher.Enabled is non-nil (i.e. batcher::enabled is specified),
 	// then the Flush will be ignored even if Batcher.Enabled is false.
 	Batcher BatcherConfig `mapstructure:"batcher"`
+
+	// Encoding defines the encoding of the telemetry logs data. If specified,
+	// it overrides the `Mapping` and applies an encoding extension.
+	Encoding *component.ID `mapstructure:"encoding"`
 }
 
 // BatcherConfig holds configuration for exporterbatcher.

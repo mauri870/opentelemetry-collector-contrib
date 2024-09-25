@@ -20,7 +20,9 @@ require (
 	go.opentelemetry.io/collector/confmap v1.16.0
 	go.opentelemetry.io/collector/consumer v0.110.0
 	go.opentelemetry.io/collector/exporter v0.110.0
+	go.opentelemetry.io/collector/extension v0.110.0
 	go.opentelemetry.io/collector/extension/auth v0.110.0
+	go.opentelemetry.io/collector/extension/encoding/jsonlogencodingextension v0.0.0-00010101000000-000000000000
 	go.opentelemetry.io/collector/pdata v1.16.0
 	go.opentelemetry.io/collector/pipeline v0.110.0
 	go.opentelemetry.io/collector/semconv v0.110.0
@@ -30,7 +32,7 @@ require (
 
 require (
 	github.com/armon/go-radix v1.0.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.6.0 // indirect
 	github.com/elastic/go-elasticsearch/v8 v8.14.0 // indirect
 	github.com/elastic/go-sysinfo v1.7.1 // indirect
@@ -53,8 +55,9 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding v0.110.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rs/cors v1.11.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
@@ -71,7 +74,6 @@ require (
 	go.opentelemetry.io/collector/consumer/consumerprofiles v0.110.0 // indirect
 	go.opentelemetry.io/collector/consumer/consumertest v0.110.0 // indirect
 	go.opentelemetry.io/collector/exporter/exporterprofiles v0.110.0 // indirect
-	go.opentelemetry.io/collector/extension v0.110.0 // indirect
 	go.opentelemetry.io/collector/extension/experimental/storage v0.110.0 // indirect
 	go.opentelemetry.io/collector/internal/globalsignal v0.110.0 // indirect
 	go.opentelemetry.io/collector/pdata/pprofile v0.110.0 // indirect
@@ -110,3 +112,5 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
+
+replace go.opentelemetry.io/collector/extension/encoding/jsonlogencodingextension => ../../extension/encoding/jsonlogencodingextension

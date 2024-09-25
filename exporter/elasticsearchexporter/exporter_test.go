@@ -26,6 +26,8 @@ import (
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exportertest"
 	"go.opentelemetry.io/collector/extension/auth/authtest"
+	"go.opentelemetry.io/collector/extension/encoding/jsonlogencodingextension"
+	"go.opentelemetry.io/collector/extension/extensiontest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -33,8 +35,61 @@ import (
 	"go.opentelemetry.io/collector/pipeline"
 )
 
+func TestJSONEncoding(t *testing.T) {
+	jsonLogID := component.MustNewID("json_log_encoding")
+
+	rec := newBulkRecorder()
+	server := newESTestServer(t, func(docs []itemRequest) ([]itemResponse, error) {
+		rec.Record(docs)
+
+		// make sure we process all scoped logs, not just the first one
+		assert.Equal(t, `{"id":0}`, string(docs[0].Document))
+		assert.Equal(t, `{"id":1}`, string(docs[1].Document))
+		assert.Equal(t, `{"id":2}`, string(docs[2].Document))
+
+		return itemsAllOK(docs)
+	})
+
+	exporter := newUnstartedTestLogsExporter(t, server.URL, func(cfg *Config) {
+		cfg.Encoding = &jsonLogID
+	})
+
+	ef := jsonlogencodingextension.NewFactory()
+	efCfg := ef.CreateDefaultConfig().(*jsonlogencodingextension.Config)
+	jsonExt, err := ef.CreateExtension(context.Background(), extensiontest.NewNopSettings(), efCfg)
+	require.NoError(t, err)
+	require.NoError(t, jsonExt.Start(context.Background(), componenttest.NewNopHost()))
+	err = exporter.Start(context.Background(), &mockHost{
+		extensions: map[component.ID]component.Component{
+			jsonLogID: jsonExt,
+		},
+	})
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, exporter.Shutdown(context.Background()))
+		require.NoError(t, jsonExt.Shutdown(context.Background()))
+	}()
+
+	// this is trying to replicate Beats behavior having data in the body
+	// https://github.com/elastic/beats/pull/40974/files#diff-8b26a9726038f0fb32645af4e5a72c2a04c9f0c82d0757b004731e72f648e247R84-R98
+	logs := plog.NewLogs()
+	resourceLogs := logs.ResourceLogs().AppendEmpty()
+	scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
+	logRecords := scopeLogs.LogRecords()
+	for i := 0; i < 3; i++ {
+		logRecord := logRecords.AppendEmpty()
+		logRecord.SetTimestamp(pcommon.NewTimestampFromTime(*new(time.Time)))
+		bodyMap := pcommon.NewMap()
+		bodyMap.PutInt("id", int64(i))
+		bodyMap.CopyTo(logRecord.Body().SetEmptyMap())
+	}
+	mustSendLogs(t, exporter, logs)
+	rec.WaitItems(3)
+}
+
 func TestExporterLogs(t *testing.T) {
 	t.Run("publish with success", func(t *testing.T) {
+
 		rec := newBulkRecorder()
 		server := newESTestServer(t, func(docs []itemRequest) ([]itemResponse, error) {
 			rec.Record(docs)

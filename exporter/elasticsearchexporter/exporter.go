@@ -35,6 +35,8 @@ type elasticsearchExporter struct {
 
 	wg          sync.WaitGroup // active sessions
 	bulkIndexer bulkIndexer
+
+	marshaller *marshaller
 }
 
 func newExporter(
@@ -81,6 +83,12 @@ func (e *elasticsearchExporter) Start(ctx context.Context, host component.Host) 
 		return err
 	}
 	e.bulkIndexer = bulkIndexer
+
+	marshaller, err := newMarshaller(e.config, host)
+	if err != nil {
+		return err
+	}
+	e.marshaller = marshaller
 	return nil
 }
 
@@ -129,7 +137,6 @@ func (e *elasticsearchExporter) pushLogsData(ctx context.Context, ld plog.Logs) 
 					if cerr := ctx.Err(); cerr != nil {
 						return cerr
 					}
-
 					errs = append(errs, err)
 				}
 			}
@@ -167,11 +174,32 @@ func (e *elasticsearchExporter) pushLogRecord(
 		fIndex = formattedIndex
 	}
 
-	document, err := e.model.encodeLog(resource, resourceSchemaURL, record, scope, scopeSchemaURL)
+	var document []byte
+	var err error
+	if e.marshaller != nil {
+		document, err = e.marshalLog(ctx, record)
+	} else {
+		document, err = e.model.encodeLog(resource, resourceSchemaURL, record, scope, scopeSchemaURL)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to encode log event: %w", err)
 	}
 	return bulkIndexerSession.Add(ctx, fIndex, bytes.NewReader(document), nil)
+}
+
+func (e *elasticsearchExporter) marshalLog(_ context.Context, record plog.LogRecord) ([]byte, error) {
+	// Here we have to craft a new plog.Logs with a single LogRecord
+	// since the jsonlogencodingextension only handles the first log record.
+	// See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/34064
+	export := plog.NewLogs()
+	exportrls := export.ResourceLogs().AppendEmpty()
+	exportsl := exportrls.ScopeLogs().AppendEmpty()
+
+	exportlogs := exportsl.LogRecords().AppendEmpty()
+	record.CopyTo(exportlogs)
+
+	return e.marshaller.marshalLogs(export)
 }
 
 func (e *elasticsearchExporter) pushMetricsData(
