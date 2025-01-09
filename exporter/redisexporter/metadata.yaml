@@ -1,0 +1,13 @@
+type: redis
+
+status:
+  class: exporter
+  stability:
+    development: [metrics, traces, logs]
+  distributions: [contrib]
+  codeowners:
+    active: [mauri870]
+
+tests:
+  config:
+    endpoint: "localhost:6379"
