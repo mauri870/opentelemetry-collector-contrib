@@ -5,6 +5,8 @@ package redisexporter // import "github.com/open-telemetry/opentelemetry-collect
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/collector/component"
@@ -12,16 +14,18 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.uber.org/zap"
 )
 
 type redisExporter struct {
 	config *Config
 	client client
+	logger *zap.Logger
 }
 
 func newExporter(
 	cfg *Config,
-	_ exporter.Settings,
+	set exporter.Settings,
 ) (*redisExporter, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -38,6 +42,7 @@ func newExporter(
 	return &redisExporter{
 		config: cfg,
 		client: newRedisClient(opts),
+		logger: set.Logger,
 	}, nil
 }
 
@@ -75,5 +80,44 @@ func (e *redisExporter) pushTraceData(
 }
 
 func (e *redisExporter) pushLogsData(ctx context.Context, ld plog.Logs) error {
+	start := time.Now()
+
+	for i := 0; i < ld.ResourceLogs().Len(); i++ {
+		logs := ld.ResourceLogs().At(i)
+		res := logs.Resource()
+		resAttr, err := json.Marshal(res.Attributes().AsRaw())
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < logs.ScopeLogs().Len(); j++ {
+			rs := logs.ScopeLogs().At(j).LogRecords()
+			for k := 0; k < rs.Len(); k++ {
+				r := rs.At(k)
+				logAttr, err := json.Marshal(r.Attributes().AsRaw())
+				if err != nil {
+					return err
+				}
+				bodyByte, err := json.Marshal(r.Body().AsRaw())
+				if err != nil {
+					return err
+				}
+
+				l := logPayload{
+					ResourceAttributes:  resAttr,
+					LogRecordAttributes: logAttr,
+					LogRecordBody:       bodyByte,
+				}
+				err = e.client.PublishLog(ctx, l)
+				if err != nil {
+					e.logger.Error("failed to send logs to redis", zap.Error(err))
+				}
+			}
+		}
+	}
+
+	duration := time.Since(start)
+	e.logger.Info("published logs", zap.Int("records", ld.LogRecordCount()),
+		zap.String("cost", duration.String()))
 	return nil
 }
