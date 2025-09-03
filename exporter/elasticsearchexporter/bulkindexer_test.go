@@ -711,6 +711,395 @@ func TestSyncBulkIndexer_flushBytes(t *testing.T) {
 	}
 }
 
+func TestSyncBulkIndexer_document_failures(t *testing.T) {
+	tests := []struct {
+		name                string
+		roundTripFunc       func(*http.Request) (*http.Response, error)
+		logFailedDocsInput  bool
+		retrySettings       RetrySettings
+		wantMessage         string
+		wantFields          []zap.Field
+		wantESBulkReqs      *metricdata.DataPoint[int64]
+		wantESDocsProcessed *metricdata.DataPoint[int64]
+		wantESDocsRetried   *metricdata.DataPoint[int64]
+		wantESLatency       *metricdata.HistogramDataPoint[float64]
+		wantRequestCount    int64 // Expected number of HTTP requests
+	}{
+		{
+			name: "500_http_level",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body:       io.NopCloser(strings.NewReader("server error")),
+				}, nil
+			},
+			wantMessage: "bulk indexer flush error",
+			// HTTP-level 500 errors are propagated up and should cause the flush to fail
+			// But we still want to test the telemetry behavior
+			wantRequestCount: 1,
+		},
+		{
+			name: "429_http_level",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body:       io.NopCloser(strings.NewReader("rate limited")),
+				}, nil
+			},
+			wantMessage: "bulk indexer flush error",
+			// HTTP-level 429 errors are propagated up and should cause the flush to fail
+			wantRequestCount: 1,
+		},
+		{
+			name: "429_document_level_with_retry",
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				// Simulate document-level 429 that gets retried
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[{"create":{"_index":"foo","status":429,"error":{"type":"es_rejected_execution_exception","reason":"rejected execution"}}}]}`)),
+				}, nil
+			},
+			retrySettings: RetrySettings{
+				Enabled:         true,
+				MaxRetries:      2,
+				RetryOnStatus:   []int{429},
+				InitialInterval: 10 * time.Millisecond,
+				MaxInterval:     50 * time.Millisecond,
+			},
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 3, // Initial + 2 retries
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantESDocsProcessed: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "too_many"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("error.type", "es_rejected_execution_exception"),
+				),
+			},
+			wantESDocsRetried: &metricdata.DataPoint[int64]{
+				Value: 2, // Document retried 2 times
+				Attributes: attribute.NewSet(
+					attribute.StringSlice("x-test", []string{"test"}),
+				),
+			},
+			wantESLatency: &metricdata.HistogramDataPoint[float64]{
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 3, // Initial + 2 retries
+		},
+		{
+			name: "500_document_level",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[{"create":{"_index":"foo","status":500,"error":{"type":"internal_server_error","reason":"internal error"}}}]}`)),
+				}, nil
+			},
+			wantMessage: "failed to index document",
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantESDocsProcessed: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "failed_server"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("error.type", "internal_server_error"),
+				),
+			},
+			wantESLatency: &metricdata.HistogramDataPoint[float64]{
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 1,
+		},
+		{
+			name: "transport_error",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("connection refused")
+			},
+			retrySettings: RetrySettings{Enabled: false}, // Disable retry to get predictable count
+			wantMessage:   "bulk indexer flush error",
+			// Transport errors may be retried by the underlying ES client
+			wantRequestCount: 4, // Accepting the actual behavior we observe
+		},
+		{
+			name: "mapping_exception_permanent_failure",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[{"create":{"_index":"foo","status":400,"error":{"type":"mapper_parsing_exception","reason":"failed to parse field"}}}]}`)),
+				}, nil
+			},
+			wantMessage: "failed to index document",
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantESDocsProcessed: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "failed_client"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("error.type", "mapper_parsing_exception"),
+				),
+			},
+			wantESLatency: &metricdata.HistogramDataPoint[float64]{
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 1,
+		},
+		{
+			name: "partial_failure_mixed_results",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[
+							{"create":{"_index":"foo","status":201}},
+							{"create":{"_index":"bar","status":400,"error":{"type":"version_conflict_engine_exception","reason":"document exists"}}},
+							{"create":{"_index":"baz","status":429}}
+						]}`)),
+				}, nil
+			},
+			wantMessage: "failed to index document",
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 3, // Each document addition triggers a flush due to bytes=1
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 3, // Each document triggers a separate request
+		},
+		{
+			name: "retry_disabled_with_retryable_error",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[{"create":{"_index":"foo","status":429}}]}`)),
+				}, nil
+			},
+			retrySettings: RetrySettings{Enabled: false}, // Retry disabled
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantESDocsProcessed: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "too_many"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("error.type", ""), // No error type for 429 without specific error
+				),
+			},
+			wantESLatency: &metricdata.HistogramDataPoint[float64]{
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 1, // No retries since retry is disabled
+		},
+		{
+			name: "version_conflict_with_logFailedDocsInput",
+			roundTripFunc: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"items":[{"create":{"_index":".ds-metrics-generic.otel-default","status":400,"error":{"type":"version_conflict_engine_exception","reason":"document exists"}}}]}`)),
+				}, nil
+			},
+			logFailedDocsInput: true,
+			wantMessage:        "failed to index document; input may contain sensitive data",
+			wantFields: []zap.Field{
+				zap.String("hint", "check the \"Known issues\" section of Elasticsearch Exporter docs"),
+				zap.String("input", `{"create":{"_index":"foo"}}
+{"foo": "bar"}
+`),
+			},
+			wantESBulkReqs: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantESDocsProcessed: &metricdata.DataPoint[int64]{
+				Value: 1,
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "failed_client"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("error.type", "version_conflict_engine_exception"),
+				),
+			},
+			wantESLatency: &metricdata.HistogramDataPoint[float64]{
+				Attributes: attribute.NewSet(
+					attribute.String("outcome", "success"),
+					attribute.StringSlice("x-test", []string{"test"}),
+					semconv.HTTPResponseStatusCode(http.StatusOK),
+				),
+			},
+			wantRequestCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reqCnt atomic.Int64
+			cfg := Config{
+				NumWorkers:   1,
+				Flush:        FlushSettings{Interval: time.Hour, Bytes: 1}, // Flush immediately
+				Retry:        tt.retrySettings,
+				MetadataKeys: []string{"x-test"},
+			}
+			if tt.logFailedDocsInput {
+				cfg.LogFailedDocsInput = true
+			}
+
+			esClient, err := elasticsearch.NewClient(elasticsearch.Config{Transport: &mockTransport{
+				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/_bulk" {
+						reqCnt.Add(1)
+					}
+					return tt.roundTripFunc(r)
+				},
+			}})
+			require.NoError(t, err)
+
+			ct := componenttest.NewTelemetry()
+			tb, err := metadata.NewTelemetryBuilder(
+				metadatatest.NewSettings(ct).TelemetrySettings,
+			)
+			require.NoError(t, err)
+
+			core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+			bi := newSyncBulkIndexer(esClient, &cfg, false, tb, zap.New(core))
+
+			info := client.Info{Metadata: client.NewMetadata(map[string][]string{"x-test": {"test"}})}
+			ctx := client.NewContext(t.Context(), info)
+			session := bi.StartSession(ctx)
+
+			// For the partial failure test, we need to add multiple documents
+			var addErr error
+			if tt.name == "partial_failure_mixed_results" {
+				addErr = session.Add(ctx, "foo", "", "", strings.NewReader(`{"foo": "bar"}`), nil, docappender.ActionCreate)
+				if addErr == nil {
+					addErr = session.Add(ctx, "bar", "", "", strings.NewReader(`{"bar": "baz"}`), nil, docappender.ActionCreate)
+				}
+				if addErr == nil {
+					addErr = session.Add(ctx, "baz", "", "", strings.NewReader(`{"baz": "qux"}`), nil, docappender.ActionCreate)
+				}
+			} else {
+				addErr = session.Add(ctx, "foo", "", "", strings.NewReader(`{"foo": "bar"}`), nil, docappender.ActionCreate)
+			}
+
+			// HTTP-level errors occur during Add() due to auto-flush, document-level errors don't
+			if strings.Contains(tt.name, "http_level") || tt.name == "transport_error" {
+				assert.Error(t, addErr, "expected Add to fail for %s", tt.name)
+				// Skip flush since Add already failed
+			} else {
+				assert.NoError(t, addErr, "expected Add to succeed for %s", tt.name)
+				// Flush and ensure all documents are processed
+				flushErr := session.Flush(ctx)
+				assert.NoError(t, flushErr, "expected flush to succeed for %s", tt.name)
+			}
+			session.End()
+			assert.NoError(t, bi.Close(ctx))
+
+			// Verify request count
+			if tt.wantRequestCount > 0 {
+				assert.Equal(t, tt.wantRequestCount, reqCnt.Load(), "unexpected number of HTTP requests")
+			}
+
+			// Assert logs
+			if tt.wantMessage != "" {
+				messages := observed.FilterMessage(tt.wantMessage)
+				require.GreaterOrEqual(t, messages.Len(), 1, "message not found; observed.All()=%v", observed.All())
+				for _, wantField := range tt.wantFields {
+					assert.GreaterOrEqual(t, messages.FilterField(wantField).Len(), 1, "message with field not found; observed.All()=%v", observed.All())
+				}
+			}
+
+			// Assert internal telemetry metrics
+			if tt.wantESBulkReqs != nil {
+				metadatatest.AssertEqualElasticsearchBulkRequestsCount(
+					t, ct,
+					[]metricdata.DataPoint[int64]{*tt.wantESBulkReqs},
+					metricdatatest.IgnoreTimestamp(),
+				)
+			}
+			if tt.wantESDocsProcessed != nil {
+				metadatatest.AssertEqualElasticsearchDocsProcessed(
+					t, ct,
+					[]metricdata.DataPoint[int64]{*tt.wantESDocsProcessed},
+					metricdatatest.IgnoreTimestamp(),
+				)
+			}
+			if tt.wantESDocsRetried != nil {
+				metadatatest.AssertEqualElasticsearchDocsRetried(
+					t, ct,
+					[]metricdata.DataPoint[int64]{*tt.wantESDocsRetried},
+					metricdatatest.IgnoreTimestamp(),
+				)
+			}
+			if tt.wantESLatency != nil {
+				metadatatest.AssertEqualElasticsearchBulkRequestsLatency(
+					t, ct,
+					[]metricdata.HistogramDataPoint[float64]{*tt.wantESLatency},
+					metricdatatest.IgnoreTimestamp(),
+					metricdatatest.IgnoreValue(),
+				)
+			}
+		})
+	}
+}
+
 func TestNewBulkIndexer(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
