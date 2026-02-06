@@ -194,8 +194,9 @@ func (*syncBulkIndexer) Close(context.Context) error {
 }
 
 type syncBulkIndexerSession struct {
-	s  *syncBulkIndexer
-	bi *docappender.BulkIndexer
+	s         *syncBulkIndexer
+	bi        *docappender.BulkIndexer
+	documents []docappender.BulkIndexerItem // Track documents for potential batch splitting
 }
 
 // Add adds an item to the sync bulk indexer session.
@@ -208,6 +209,8 @@ func (s *syncBulkIndexerSession) Add(ctx context.Context, index, docID, pipeline
 		Action:           action,
 		Pipeline:         pipeline,
 	}
+	// Track documents for potential batch splitting on 413 errors
+	s.documents = append(s.documents, doc)
 	err := s.bi.Add(doc)
 	if err != nil {
 		return err
@@ -227,9 +230,110 @@ func (s *syncBulkIndexerSession) Add(ctx context.Context, index, docID, pipeline
 	return nil
 }
 
-// End is a no-op.
-func (*syncBulkIndexerSession) End() {
+// End clears tracked documents and releases resources.
+func (s *syncBulkIndexerSession) End() {
+	// Clear tracked documents
+	s.documents = nil
 	// TODO acquire docappender.BulkIndexer from pool in StartSession, release here
+}
+
+// splitAndFlushBatch splits the current batch into smaller batches and flushes them individually.
+func (s *syncBulkIndexerSession) splitAndFlushBatch(ctx context.Context) error {
+	docs := s.documents
+	if len(docs) <= 1 {
+		return errors.New("cannot split batch with only one document")
+	}
+
+	// Split batch in half
+	mid := len(docs) / 2
+	batches := [][]docappender.BulkIndexerItem{
+		docs[:mid],
+		docs[mid:],
+	}
+
+	s.s.logger.Info("Splitting batch due to 413 error", 
+		zap.Int("original_size", len(docs)),
+		zap.Int("batch_1_size", len(batches[0])),
+		zap.Int("batch_2_size", len(batches[1])))
+
+	// Process each batch
+	for i, batch := range batches {
+		if err := s.flushBatch(ctx, batch); err != nil {
+			s.s.logger.Error("Failed to flush split batch", zap.Int("batch_index", i), zap.Error(err))
+			return fmt.Errorf("failed to flush batch %d: %w", i, err)
+		}
+	}
+
+	// Clear the original bulk indexer and documents since we've processed them
+	s.bi, _ = docappender.NewBulkIndexer(s.s.config)
+	s.documents = nil
+
+	return nil
+}
+
+// flushBatch creates a new bulk indexer session and flushes the given batch of documents.
+func (s *syncBulkIndexerSession) flushBatch(ctx context.Context, docs []docappender.BulkIndexerItem) error {
+	bi, err := docappender.NewBulkIndexer(s.s.config)
+	if err != nil {
+		return fmt.Errorf("failed to create bulk indexer for split batch: %w", err)
+	}
+
+	// Add documents to the new bulk indexer
+	for _, doc := range docs {
+		if err := bi.Add(doc); err != nil {
+			return fmt.Errorf("failed to add document to split batch: %w", err)
+		}
+	}
+
+	// Flush the batch with retry logic for potential recursive splitting
+	return s.flushBulkIndexerWithSplitting(ctx, bi, docs)
+}
+
+// flushBulkIndexerWithSplitting flushes a bulk indexer with support for recursive batch splitting on 413 errors.
+func (s *syncBulkIndexerSession) flushBulkIndexerWithSplitting(ctx context.Context, bi *docappender.BulkIndexer, docs []docappender.BulkIndexerItem) error {
+	err := flushBulkIndexer(
+		ctx,
+		bi,
+		s.s.flushTimeout,
+		s.s.metadataKeys,
+		s.s.telemetryBuilder,
+		s.s.logger,
+		s.s.failedDocsInputLogger,
+	)
+
+	if err != nil {
+		// Check if we got another 413 and need to split further
+		var bulkFailedErr docappender.ErrorFlushFailed
+		if errors.As(err, &bulkFailedErr) && bulkFailedErr.StatusCode() == http.StatusRequestEntityTooLarge && len(docs) > 1 {
+			s.s.logger.Info("Received 413 error on split batch, splitting further", zap.Int("batch_size", len(docs)))
+			return s.flushBatchRecursive(ctx, docs)
+		}
+	}
+
+	return err
+}
+
+// flushBatchRecursive recursively splits and flushes batches when encountering 413 errors.
+func (s *syncBulkIndexerSession) flushBatchRecursive(ctx context.Context, docs []docappender.BulkIndexerItem) error {
+	if len(docs) <= 1 {
+		return errors.New("cannot split batch with only one document")
+	}
+
+	// Split batch in half
+	mid := len(docs) / 2
+	batches := [][]docappender.BulkIndexerItem{
+		docs[:mid],
+		docs[mid:],
+	}
+
+	// Process each batch recursively
+	for i, batch := range batches {
+		if err := s.flushBatch(ctx, batch); err != nil {
+			return fmt.Errorf("failed to flush recursive batch %d: %w", i, err)
+		}
+	}
+
+	return nil
 }
 
 // Flush flushes documents added to the bulk indexer session.
@@ -245,6 +349,12 @@ func (s *syncBulkIndexerSession) Flush(ctx context.Context) error {
 			s.s.logger,
 			s.s.failedDocsInputLogger,
 		); err != nil {
+			// Check if error is 413 (Request Entity Too Large) and we have documents to split
+			var bulkFailedErr docappender.ErrorFlushFailed
+			if errors.As(err, &bulkFailedErr) && bulkFailedErr.StatusCode() == http.StatusRequestEntityTooLarge && len(s.documents) > 1 {
+				s.s.logger.Info("Received 413 error, splitting batch", zap.Int("original_size", len(s.documents)))
+				return s.splitAndFlushBatch(ctx)
+			}
 			return err
 		}
 		if s.bi.Items() == 0 {
@@ -331,6 +441,8 @@ func flushBulkIndexer(
 			switch {
 			case code == http.StatusTooManyRequests:
 				outcome = "too_many"
+			case code == http.StatusRequestEntityTooLarge:
+				outcome = "request_too_large"
 			case code >= 500:
 				outcome = "failed_server"
 			case code >= 400:
