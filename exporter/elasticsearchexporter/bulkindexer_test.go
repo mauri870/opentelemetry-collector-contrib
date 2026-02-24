@@ -193,6 +193,106 @@ func TestSyncBulkIndexer(t *testing.T) {
 	}
 }
 
+func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
+	tests := []struct {
+		name               string
+		retryOnStatus      []int
+		responseStatusCode int
+		docsCount          int
+		retryCount         int
+	}{
+		{
+			name:               "retry_on_429_should_increment_retried_count",
+			retryOnStatus:      []int{429},
+			responseStatusCode: http.StatusTooManyRequests,
+			docsCount:          3,
+			retryCount:         3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reqCnt atomic.Int64
+			cfg := Config{
+				QueueBatchConfig: configoptional.Default(exporterhelper.QueueBatchConfig{
+					NumConsumers: 1,
+				}),
+				MetadataKeys: []string{"x-test"},
+				Retry: RetrySettings{
+					Enabled:       true,
+					RetryOnStatus: tt.retryOnStatus,
+				},
+			}
+
+			esClient, err := elastictransport.New(elastictransport.Config{
+				URLs:          []*url.URL{{Scheme: "http", Host: "localhost:9200"}},
+				RetryOnStatus: cfg.Retry.RetryOnStatus,
+				DisableRetry:  !cfg.Retry.Enabled,
+				Transport: &mockTransport{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						if r.URL.Path == "/_bulk" {
+							reqCnt.Add(1)
+						}
+
+						if reqCnt.Load() <= int64(tt.retryCount) {
+							return &http.Response{
+								Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+								Body:       io.NopCloser(strings.NewReader("{}")),
+								StatusCode: tt.responseStatusCode,
+							}, nil
+						}
+
+						return &http.Response{
+							Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+							Body:       io.NopCloser(strings.NewReader(successResp)),
+							StatusCode: http.StatusOK,
+						}, nil
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			expectedRetries := int64(tt.docsCount * tt.retryCount) // all documents in the batch are retried for each retry attempt
+
+			ct := componenttest.NewTelemetry()
+			tb, err := metadata.NewTelemetryBuilder(
+				metadatatest.NewSettings(ct).TelemetrySettings,
+			)
+			require.NoError(t, err)
+
+			core, _ := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+			bi := newSyncBulkIndexer(esClient, &cfg, false, tb, zap.New(core))
+
+			info := client.Info{Metadata: client.NewMetadata(map[string][]string{"x-test": {"test"}})}
+			ctx := client.NewContext(t.Context(), info)
+			session := bi.StartSession(ctx)
+
+			// Add multiple documents to test batch retry count
+			for i := 0; i < tt.docsCount; i++ {
+				assert.NoError(t, session.Add(ctx, "foo", "", "", strings.NewReader(`{"foo": "bar"}`), nil, docappender.ActionCreate))
+			}
+
+			assert.Equal(t, int64(0), reqCnt.Load()) // requests will not flush unless flush is called explicitly
+			assert.Error(t, session.Flush(ctx))
+			assert.Equal(t, expectedRetries, reqCnt.Load())
+			session.End()
+			assert.NoError(t, bi.Close(ctx))
+
+			// Assert elasticsearch docs retried metric
+			metadatatest.AssertEqualElasticsearchDocsRetried(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value: expectedRetries, // all documents in the batch are retried for each retry attempt
+					Attributes: attribute.NewSet(
+						attribute.StringSlice("x-test", []string{"test"}),
+						attribute.String("outcome", statusToOutcome(tt.responseStatusCode)),
+						attribute.Int("http.response.status_code", tt.responseStatusCode),
+					),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+		})
+	}
+}
+
 func TestQueryParamsParsedFromEndpoints(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Endpoints = []string{"http://localhost:9200?pipeline=test-pipeline"}

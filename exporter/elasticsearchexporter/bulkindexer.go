@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -244,6 +245,7 @@ func (s *syncBulkIndexerSession) Flush(ctx context.Context) error {
 			s.s.telemetryBuilder,
 			s.s.logger,
 			s.s.failedDocsInputLogger,
+			s.s.retryConfig.RetryOnStatus,
 		); err != nil {
 			return err
 		}
@@ -279,6 +281,7 @@ func flushBulkIndexer(
 	tb *metadata.TelemetryBuilder,
 	logger *zap.Logger,
 	failedDocsInputLogger *zap.Logger,
+	retryOnStatus []int,
 ) error {
 	itemsCount := bi.Items()
 	if itemsCount == 0 {
@@ -337,6 +340,10 @@ func flushBulkIndexer(
 			tb.ElasticsearchDocsProcessed.Add(ctx, int64(itemsCount), attrSet)
 			tb.ElasticsearchBulkRequestsCount.Add(ctx, int64(1), attrSet)
 			tb.ElasticsearchBulkRequestsLatency.Record(ctx, latency, attrSet)
+			// count all docs as retried for batches that failed with retryable status codes
+			if len(stat.FailedDocs) == 0 && slices.Contains(retryOnStatus, code) {
+				tb.ElasticsearchDocsRetried.Add(ctx, int64(itemsCount), attrSet)
+			}
 		default:
 			attrSet := metric.WithAttributeSet(attribute.NewSet(
 				append(defaultMetaAttrs,
