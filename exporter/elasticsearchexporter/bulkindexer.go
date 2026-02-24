@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
@@ -70,6 +71,38 @@ const (
 // otelDatasetSuffixRegex matches the .otel-{namespace} suffix pattern in OTel mapping mode indices.
 // Pattern: {signal}-{dataset}.otel-{namespace}
 var otelDatasetSuffixRegex = regexp.MustCompile(`^[^-]+?-[^-]+?\.otel-`)
+
+type attemptCounterKey struct{}
+
+// AttemptCounter tracks the number of round-trip attempts for a single
+// Perform call. Attach it to the request context before calling Perform,
+// and read it back afterwards.
+type AttemptCounter struct {
+	value atomic.Int64
+}
+
+func (c *AttemptCounter) Attempts() int { return int(c.value.Load()) }
+func (c *AttemptCounter) Retries() int  { return max(c.Attempts()-1, 0) }
+
+// NewAttemptContext returns a context carrying a fresh AttemptCounter,
+// along with the counter itself so the caller can inspect it after Perform.
+func NewAttemptContext(ctx context.Context) (context.Context, *AttemptCounter) {
+	counter := &AttemptCounter{}
+	return context.WithValue(ctx, attemptCounterKey{}, counter), counter
+}
+
+// CountRetriesInterceptor returns an interceptor that increments the
+// AttemptCounter stored in the request context on every round-trip.
+func CountRetriesInterceptor() elastictransport.InterceptorFunc {
+	return func(next elastictransport.RoundTripFunc) elastictransport.RoundTripFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			if counter, ok := req.Context().Value(attemptCounterKey{}).(*AttemptCounter); ok {
+				counter.value.Add(1)
+			}
+			return next(req)
+		}
+	}
+}
 
 func newBulkIndexer(
 	client elastictransport.Interface,
@@ -244,6 +277,8 @@ func (s *syncBulkIndexerSession) Flush(ctx context.Context) error {
 			s.s.telemetryBuilder,
 			s.s.logger,
 			s.s.failedDocsInputLogger,
+			s.s.retryConfig.RetryOnStatus,
+			s.s.config.Client,
 		); err != nil {
 			return err
 		}
@@ -279,6 +314,8 @@ func flushBulkIndexer(
 	tb *metadata.TelemetryBuilder,
 	logger *zap.Logger,
 	failedDocsInputLogger *zap.Logger,
+	retryOnStatus []int,
+	client elastictransport.Interface,
 ) error {
 	itemsCount := bi.Items()
 	if itemsCount == 0 {
@@ -289,8 +326,11 @@ func flushBulkIndexer(
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+
+	// Create context with attempt counter to track http retries
+	ctxWithRetries, counter := NewAttemptContext(ctx)
 	startTime := time.Now()
-	stat, err := bi.Flush(ctx)
+	stat, err := bi.Flush(ctxWithRetries)
 	latency := time.Since(startTime).Seconds()
 	defaultMetaAttrs := getAttributesFromMetadataKeys(ctx, tMetaKeys)
 	defaultAttrsSet := attribute.NewSet(defaultMetaAttrs...)
@@ -301,6 +341,10 @@ func flushBulkIndexer(
 		tb.ElasticsearchFlushedUncompressedBytes.Add(
 			ctx, int64(flushed), metric.WithAttributeSet(defaultAttrsSet),
 		)
+	}
+	// Use interceptor retry count instead of stat.RequestRetries
+	if retryCount := counter.Retries(); retryCount > 0 {
+		tb.ElasticsearchDocsRetriedHTTPRequest.Add(ctx, int64(retryCount*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
 	}
 
 	var fields []zap.Field

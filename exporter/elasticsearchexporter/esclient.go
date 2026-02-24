@@ -229,6 +229,9 @@ func newElasticsearchClient(
 			false, /* captureSearchBody */
 			elastictransportversion.Version,
 		),
+		Interceptors: []elastictransport.InterceptorFunc{
+			CountRetriesInterceptor(),
+		},
 	}
 
 	tp, err := elastictransport.New(tpConfig)
