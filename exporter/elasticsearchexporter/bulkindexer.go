@@ -246,6 +246,7 @@ func (s *syncBulkIndexerSession) Flush(ctx context.Context) error {
 			s.s.logger,
 			s.s.failedDocsInputLogger,
 			s.s.retryConfig.RetryOnStatus,
+			s.s.config.Client,
 		); err != nil {
 			return err
 		}
@@ -282,6 +283,7 @@ func flushBulkIndexer(
 	logger *zap.Logger,
 	failedDocsInputLogger *zap.Logger,
 	retryOnStatus []int,
+	client elastictransport.Interface,
 ) error {
 	itemsCount := bi.Items()
 	if itemsCount == 0 {
@@ -340,9 +342,21 @@ func flushBulkIndexer(
 			tb.ElasticsearchDocsProcessed.Add(ctx, int64(itemsCount), attrSet)
 			tb.ElasticsearchBulkRequestsCount.Add(ctx, int64(1), attrSet)
 			tb.ElasticsearchBulkRequestsLatency.Record(ctx, latency, attrSet)
+
 			// count all docs as retried for batches that failed with retryable status codes
-			if len(stat.FailedDocs) == 0 && slices.Contains(retryOnStatus, code) {
-				tb.ElasticsearchDocsRetried.Add(ctx, int64(itemsCount), attrSet)
+			if len(stat.FailedDocs) == 0 {
+				c := client.(*elastictransport.Client)
+				m, err := c.Metrics()
+				if err != nil {
+					logger.Warn("failed to get transport metrics", zap.Error(err))
+				}
+				retriedCount := 0
+				for code, num := range m.Responses {
+					if slices.Contains(retryOnStatus, code) {
+						retriedCount += num
+					}
+				}
+				tb.ElasticsearchDocsRetried.Add(ctx, int64(retriedCount*itemsCount), attrSet)
 			}
 		default:
 			attrSet := metric.WithAttributeSet(attribute.NewSet(

@@ -206,7 +206,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			retryOnStatus:      []int{429},
 			responseStatusCode: http.StatusTooManyRequests,
 			docsCount:          3,
-			retryCount:         3,
+			retryCount:         6,
 		},
 	}
 
@@ -225,6 +225,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			}
 
 			esClient, err := elastictransport.New(elastictransport.Config{
+				EnableMetrics: true,
 				URLs:          []*url.URL{{Scheme: "http", Host: "localhost:9200"}},
 				RetryOnStatus: cfg.Retry.RetryOnStatus,
 				DisableRetry:  !cfg.Retry.Enabled,
@@ -232,14 +233,14 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 						if r.URL.Path == "/_bulk" {
 							reqCnt.Add(1)
-						}
 
-						if reqCnt.Load() <= int64(tt.retryCount) {
-							return &http.Response{
-								Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-								Body:       io.NopCloser(strings.NewReader("{}")),
-								StatusCode: tt.responseStatusCode,
-							}, nil
+							if reqCnt.Load() <= int64(tt.retryCount) {
+								return &http.Response{
+									Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+									Body:       io.NopCloser(strings.NewReader("{}")),
+									StatusCode: tt.responseStatusCode,
+								}, nil
+							}
 						}
 
 						return &http.Response{
@@ -252,7 +253,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			expectedRetries := int64(tt.docsCount * tt.retryCount) // all documents in the batch are retried for each retry attempt
+			expectedRetries := int64(tt.retryCount + 1) // retry attempts + success
 
 			ct := componenttest.NewTelemetry()
 			tb, err := metadata.NewTelemetryBuilder(
@@ -281,7 +282,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			// Assert elasticsearch docs retried metric
 			metadatatest.AssertEqualElasticsearchDocsRetried(t, ct, []metricdata.DataPoint[int64]{
 				{
-					Value: expectedRetries, // all documents in the batch are retried for each retry attempt
+					Value: expectedRetries,
 					Attributes: attribute.NewSet(
 						attribute.StringSlice("x-test", []string{"test"}),
 						attribute.String("outcome", statusToOutcome(tt.responseStatusCode)),
