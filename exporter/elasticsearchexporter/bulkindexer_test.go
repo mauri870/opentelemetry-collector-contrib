@@ -282,7 +282,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			assert.NoError(t, bi.Close(ctx))
 
 			// Assert elasticsearch docs retried metric
-			metadatatest.AssertEqualElasticsearchDocsRetried(t, ct, []metricdata.DataPoint[int64]{
+			metadatatest.AssertEqualElasticsearchDocsRetriedHTTPRequest(t, ct, []metricdata.DataPoint[int64]{
 				{
 					Value: int64(tt.retryCount * tt.docsCount), // all docs in the batch are retried for each retry attempt
 					Attributes: attribute.NewSet(

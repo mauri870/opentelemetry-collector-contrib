@@ -307,7 +307,7 @@ func flushBulkIndexer(
 		)
 	}
 	if stat.RequestRetries > 0 {
-		tb.ElasticsearchDocsRetried.Add(ctx, int64(stat.RequestRetries*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
+		tb.ElasticsearchDocsRetriedHTTPRequest.Add(ctx, int64(stat.RequestRetries*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
 	}
 
 	var fields []zap.Field
