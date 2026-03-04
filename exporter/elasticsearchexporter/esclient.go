@@ -135,6 +135,21 @@ func (e *esClient) Perform(req *http.Request) (*http.Response, error) {
 	return res, nil
 }
 
+func (e *esClient) PerformWithStats(req *http.Request) (*http.Response, *elastictransport.PerformStats, error) {
+	res, stats, err := e.transport.PerformWithStats(req)
+	if err != nil {
+		return nil, stats, err
+	}
+	if res.StatusCode >= 200 && res.StatusCode < 300 {
+		checkHeader := func() error { return genuineCheckHeader(res.Header) }
+		if err := e.doProductCheck(checkHeader); err != nil {
+			res.Body.Close()
+			return nil, stats, err
+		}
+	}
+	return res, stats, nil
+}
+
 func (e *esClient) doProductCheck(f func() error) error {
 	if e.productCheckSuccess.Load() {
 		return nil

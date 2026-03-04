@@ -221,6 +221,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 				Retry: RetrySettings{
 					Enabled:       true,
 					RetryOnStatus: tt.retryOnStatus,
+					MaxRetries:    tt.retryCount,
 				},
 			}
 
@@ -228,6 +229,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 				EnableMetrics: true,
 				URLs:          []*url.URL{{Scheme: "http", Host: "localhost:9200"}},
 				RetryOnStatus: cfg.Retry.RetryOnStatus,
+				MaxRetries:    cfg.Retry.MaxRetries,
 				DisableRetry:  !cfg.Retry.Enabled,
 				Transport: &mockTransport{
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
@@ -282,7 +284,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			// Assert elasticsearch docs retried metric
 			metadatatest.AssertEqualElasticsearchDocsRetried(t, ct, []metricdata.DataPoint[int64]{
 				{
-					Value: expectedRetries,
+					Value: int64(tt.retryCount * tt.docsCount), // all docs in the batch are retried for each retry attempt
 					Attributes: attribute.NewSet(
 						attribute.StringSlice("x-test", []string{"test"}),
 						attribute.String("outcome", statusToOutcome(tt.responseStatusCode)),

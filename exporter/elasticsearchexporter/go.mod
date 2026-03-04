@@ -129,3 +129,7 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
+
+replace github.com/elastic/elastic-transport-go/v8 => /home/mauri870/git/elastic/elastic-transport-go
+
+replace github.com/elastic/go-docappender/v2 => /home/mauri870/git/elastic/go-docappender

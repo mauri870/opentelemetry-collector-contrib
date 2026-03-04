@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -307,6 +306,10 @@ func flushBulkIndexer(
 			ctx, int64(flushed), metric.WithAttributeSet(defaultAttrsSet),
 		)
 	}
+	// count all docs as retried for batches that failed with retryable status codes
+	if stat.RequestRetries > 0 {
+		tb.ElasticsearchDocsRetried.Add(ctx, int64(stat.RequestRetries*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
+	}
 
 	var fields []zap.Field
 	// append metadata attributes to error log fields
@@ -342,22 +345,6 @@ func flushBulkIndexer(
 			tb.ElasticsearchDocsProcessed.Add(ctx, int64(itemsCount), attrSet)
 			tb.ElasticsearchBulkRequestsCount.Add(ctx, int64(1), attrSet)
 			tb.ElasticsearchBulkRequestsLatency.Record(ctx, latency, attrSet)
-
-			// count all docs as retried for batches that failed with retryable status codes
-			if len(stat.FailedDocs) == 0 {
-				c := client.(*elastictransport.Client)
-				m, err := c.Metrics()
-				if err != nil {
-					logger.Warn("failed to get transport metrics", zap.Error(err))
-				}
-				retriedCount := 0
-				for code, num := range m.Responses {
-					if slices.Contains(retryOnStatus, code) {
-						retriedCount += num
-					}
-				}
-				tb.ElasticsearchDocsRetried.Add(ctx, int64(retriedCount*itemsCount), attrSet)
-			}
 		default:
 			attrSet := metric.WithAttributeSet(attribute.NewSet(
 				append(defaultMetaAttrs,
