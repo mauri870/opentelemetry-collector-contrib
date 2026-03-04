@@ -306,7 +306,6 @@ func flushBulkIndexer(
 			ctx, int64(flushed), metric.WithAttributeSet(defaultAttrsSet),
 		)
 	}
-	// count all docs as retried for batches that failed with retryable status codes
 	if stat.RequestRetries > 0 {
 		tb.ElasticsearchDocsRetried.Add(ctx, int64(stat.RequestRetries*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
 	}

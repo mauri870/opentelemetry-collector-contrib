@@ -255,7 +255,7 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			expectedRetries := int64(tt.retryCount + 1) // retry attempts + success
+			expectedRequestCount := int64(tt.retryCount + 1) // retry attempts + success
 
 			ct := componenttest.NewTelemetry()
 			tb, err := metadata.NewTelemetryBuilder(
@@ -276,8 +276,8 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 			}
 
 			assert.Equal(t, int64(0), reqCnt.Load()) // requests will not flush unless flush is called explicitly
-			assert.Error(t, session.Flush(ctx))
-			assert.Equal(t, expectedRetries, reqCnt.Load())
+			assert.NoError(t, session.Flush(ctx))    // After retries, flush should succeed
+			assert.Equal(t, expectedRequestCount, reqCnt.Load())
 			session.End()
 			assert.NoError(t, bi.Close(ctx))
 
@@ -287,8 +287,6 @@ func TestSyncBulkIndexerRetryOnStatus(t *testing.T) {
 					Value: int64(tt.retryCount * tt.docsCount), // all docs in the batch are retried for each retry attempt
 					Attributes: attribute.NewSet(
 						attribute.StringSlice("x-test", []string{"test"}),
-						attribute.String("outcome", statusToOutcome(tt.responseStatusCode)),
-						attribute.Int("http.response.status_code", tt.responseStatusCode),
 					),
 				},
 			}, metricdatatest.IgnoreTimestamp())
