@@ -70,10 +70,10 @@ github.com/lestrrat-go/envload v0.0.0-20180220234015-a3eb8ddeffcc h1:RKf14vYWi2t
 github.com/lestrrat-go/envload v0.0.0-20180220234015-a3eb8ddeffcc/go.mod h1:kopuH9ugFRkIXf3YoqHKyrJ9YfUFsckUU9S7B+XP+is=
 github.com/lestrrat-go/strftime v1.1.1 h1:zgf8QCsgj27GlKBy3SU9/8MMgegZ8UCzlCyHYrUF0QU=
 github.com/lestrrat-go/strftime v1.1.1/go.mod h1:YDrzHJAODYQ+xxvrn5SG01uFIQAeDTzpxNVppCz7Nmw=
-github.com/mauri870/elastic-transport-go/v8 v8.0.0-20260302182637-b75374758b3f h1:mS1+wvLtJFoAAhuQgmwSXi5S35LBxXtZfzHuQPmuB7w=
-github.com/mauri870/elastic-transport-go/v8 v8.0.0-20260302182637-b75374758b3f/go.mod h1:ssMTvNS2hwf7CaiGsRRsx4gQHFZ/jS/DkLcISxekWzc=
-github.com/mauri870/go-docappender/v2 v2.0.0-20260303172643-15434c6ba426 h1:G0SN9+3KBrqkyD/i2ws9oz4orQjpmjKA3KirkWEwDf0=
-github.com/mauri870/go-docappender/v2 v2.0.0-20260303172643-15434c6ba426/go.mod h1:Avq8gLP4Z4VaF3UnW7fGcDZF/HOtCYIpqP7RjhcDphI=
+github.com/mauri870/elastic-transport-go/v8 v8.0.0-20260305174654-78b5475c15b2 h1:vG9l8j6sZ5uq1jRusML0K//U+OWTXS8b4OwpsuAD/sE=
+github.com/mauri870/elastic-transport-go/v8 v8.0.0-20260305174654-78b5475c15b2/go.mod h1:ssMTvNS2hwf7CaiGsRRsx4gQHFZ/jS/DkLcISxekWzc=
+github.com/mauri870/go-docappender/v2 v2.0.0-20260305144931-1ef1ae81754d h1:z/YpODurHCG4/uAIZwBJh8HfGzEQkkmEspBuxBAdO8g=
+github.com/mauri870/go-docappender/v2 v2.0.0-20260305144931-1ef1ae81754d/go.mod h1:06LqejG3ucUw0uALkAjYuFlcsvJ3fx1eR8o2x/mcmUc=
 github.com/minio/sha256-simd v1.0.1 h1:6kaan5IFmwTNynnKKpDHe6FWHohJOHhCPchzK49dzMM=
 github.com/minio/sha256-simd v1.0.1/go.mod h1:Pz6AKMiUdngCLpeTL/RJY1M9rUuPMYujV5xJjtbRSN8=
 github.com/mitchellh/copystructure v1.2.0 h1:vpKXTN4ewci03Vljg/q9QvCGUDttBOGBIa15WveJJGw=
