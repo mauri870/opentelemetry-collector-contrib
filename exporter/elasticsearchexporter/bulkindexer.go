@@ -277,8 +277,6 @@ func (s *syncBulkIndexerSession) Flush(ctx context.Context) error {
 			s.s.telemetryBuilder,
 			s.s.logger,
 			s.s.failedDocsInputLogger,
-			s.s.retryConfig.RetryOnStatus,
-			s.s.config.Client,
 		); err != nil {
 			return err
 		}
@@ -314,8 +312,6 @@ func flushBulkIndexer(
 	tb *metadata.TelemetryBuilder,
 	logger *zap.Logger,
 	failedDocsInputLogger *zap.Logger,
-	retryOnStatus []int,
-	client elastictransport.Interface,
 ) error {
 	itemsCount := bi.Items()
 	if itemsCount == 0 {
