@@ -232,7 +232,7 @@ func TestSyncBulkIndexerRequestRetriesMetric(t *testing.T) {
 				MaxRetries:    cfg.Retry.MaxRetries,
 				DisableRetry:  !cfg.Retry.Enabled,
 				Interceptors: []elastictransport.InterceptorFunc{
-					CountRetriesInterceptor(),
+					countRetriesInterceptor(),
 				},
 				Transport: &mockTransport{
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {

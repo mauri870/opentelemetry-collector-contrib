@@ -88,16 +88,16 @@ type AttemptCounter struct {
 func (c *AttemptCounter) Attempts() int { return int(c.value.Load()) }
 func (c *AttemptCounter) Retries() int  { return max(c.Attempts()-1, 0) }
 
-// NewAttemptContext returns a context carrying a fresh AttemptCounter,
+// newAttemptContext returns a context carrying a fresh AttemptCounter,
 // along with the counter itself so the caller can inspect it after Perform.
-func NewAttemptContext(ctx context.Context) (context.Context, *AttemptCounter) {
+func newAttemptContext(ctx context.Context) (context.Context, *AttemptCounter) {
 	counter := &AttemptCounter{}
 	return context.WithValue(ctx, attemptCounterKey{}, counter), counter
 }
 
-// CountRetriesInterceptor returns an interceptor that increments the
+// countRetriesInterceptor returns an interceptor that increments the
 // AttemptCounter stored in the request context on every round-trip.
-func CountRetriesInterceptor() elastictransport.InterceptorFunc {
+func countRetriesInterceptor() elastictransport.InterceptorFunc {
 	return func(next elastictransport.RoundTripFunc) elastictransport.RoundTripFunc {
 		return func(req *http.Request) (*http.Response, error) {
 			if counter, ok := req.Context().Value(attemptCounterKey{}).(*AttemptCounter); ok {
@@ -334,7 +334,7 @@ func flushBulkIndexer(
 	}
 
 	// Create context with attempt counter to track http retries
-	ctxWithRetries, counter := NewAttemptContext(ctx)
+	ctxWithRetries, counter := newAttemptContext(ctx)
 	startTime := time.Now()
 	stat, err := bi.Flush(ctxWithRetries)
 	latency := time.Since(startTime).Seconds()

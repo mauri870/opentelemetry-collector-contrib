@@ -230,7 +230,7 @@ func newElasticsearchClient(
 			elastictransportversion.Version,
 		),
 		Interceptors: []elastictransport.InterceptorFunc{
-			CountRetriesInterceptor(),
+			countRetriesInterceptor(),
 		},
 	}
 
