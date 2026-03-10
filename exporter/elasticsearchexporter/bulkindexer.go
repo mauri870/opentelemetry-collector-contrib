@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/elastic/elastic-transport-go/v8/elastictransport"
@@ -70,38 +69,6 @@ const (
 	// related to require_data_stream with incompatible Elasticsearch versions in ECS mode.
 	errorHintECSMappingMode = "ECS mapping mode requires Elasticsearch 8.12+ (see Known issues in README)"
 )
-
-type attemptCounterKey struct{}
-
-// attemptCounter tracks the number of round-trip attempts for a single
-// Perform call. Attach it to the request context before calling Perform,
-// and read it back afterwards.
-type attemptCounter struct {
-	value atomic.Int64
-}
-
-func (c *attemptCounter) Attempts() int { return int(c.value.Load()) }
-func (c *attemptCounter) Retries() int  { return max(c.Attempts()-1, 0) }
-
-// newAttemptContext returns a context carrying a fresh attemptCounter,
-// along with the counter itself so the caller can inspect it after Perform.
-func newAttemptContext(ctx context.Context) (context.Context, *attemptCounter) {
-	counter := &attemptCounter{}
-	return context.WithValue(ctx, attemptCounterKey{}, counter), counter
-}
-
-// countRetriesInterceptor returns an interceptor that increments the
-// attemptCounter stored in the request context on every round-trip.
-func countRetriesInterceptor() elastictransport.InterceptorFunc {
-	return func(next elastictransport.RoundTripFunc) elastictransport.RoundTripFunc {
-		return func(req *http.Request) (*http.Response, error) {
-			if counter, ok := req.Context().Value(attemptCounterKey{}).(*attemptCounter); ok {
-				counter.value.Add(1)
-			}
-			return next(req)
-		}
-	}
-}
 
 func newBulkIndexer(
 	client elastictransport.Interface,
