@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -71,10 +70,6 @@ const (
 	// related to require_data_stream with incompatible Elasticsearch versions in ECS mode.
 	errorHintECSMappingMode = "ECS mapping mode requires Elasticsearch 8.12+ (see Known issues in README)"
 )
-
-// otelDatasetSuffixRegex matches the .otel-{namespace} suffix pattern in OTel mapping mode indices.
-// Pattern: {signal}-{dataset}.otel-{namespace}
-var otelDatasetSuffixRegex = regexp.MustCompile(`^[^-]+?-[^-]+?\.otel-`)
 
 type attemptCounterKey struct{}
 
