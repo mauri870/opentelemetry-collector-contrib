@@ -295,10 +295,10 @@ func flushBulkIndexer(
 		defer cancel()
 	}
 
-	// Create context with attempt counter to track http retries
-	ctxWithRetries, counter := newAttemptContext(ctx)
+	// Create context with attempt counter to track http requests
+	ctxWithAttempts, counter := newAttemptContext(ctx)
 	startTime := time.Now()
-	stat, err := bi.Flush(ctxWithRetries)
+	stat, err := bi.Flush(ctxWithAttempts)
 	latency := time.Since(startTime).Seconds()
 	defaultMetaAttrs := getAttributesFromMetadataKeys(ctx, tMetaKeys)
 	defaultAttrsSet := attribute.NewSet(defaultMetaAttrs...)
@@ -310,7 +310,6 @@ func flushBulkIndexer(
 			ctx, int64(flushed), metric.WithAttributeSet(defaultAttrsSet),
 		)
 	}
-	// Use interceptor retry count instead of stat.RequestRetries
 	if retryCount := counter.Retries(); retryCount > 0 {
 		tb.ElasticsearchDocsRetriedHTTPRequest.Add(ctx, int64(retryCount*itemsCount), metric.WithAttributeSet(defaultAttrsSet))
 	}
